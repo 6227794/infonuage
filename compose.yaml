@@ -1,0 +1,99 @@
+services: #Déclaration de la section des services Docker
+  #Source : https://cegepmv.github.io/420-414/4-proxy-load-balancers/1-atelier/index.html
+  portainer: #Déclaration du service Portainer
+    image: portainer/portainer-ce:alpine #Utilisation d'image légère alpine de Portainer Community Edition
+    container_name: portainer #Déclaration d'un nom fixe au conteneur
+    restart: unless-stopped #Redémarration automatique sauf si l'utilisateur l'arrête manuellement
+    networks: # Connection du service au réseau personnalisé :
+        - meow
+    labels: #Ajout de métadonnée pour config automatique de Traefik
+      - 'traefik.enable=true' # Activation de gestion du service par Traefik
+      - 'traefik.http.routers.portainer.rule=Host(`portainer.meowkitty.duckdns.org`)' #Définition de règle de routage (URL correpond au sous domaine) !!ACTIVATION DU REVERSE PROXY
+      - 'traefik.http.routers.portainer.entryPoints=websecure' #Utilisation d'un point d'entrée HTTPS nommé websecure
+      - "traefik.http.services.frontend.loadbalancer.server.port=9000" #Indication à Traefik le port externe de Portainer 
+      - "traefik.http.routers.frontend.service=frontend" #Liaison du routeur frontend au service frontend
+    volumes: #Déclaration des volumes du conteneur
+      - /var/run/docker.sock:/var/run/docker.sock #Accès au socket Docker pour que Portainer gère conteneur
+      - portainer_data:/data #Stockage de donnée
+  jellyfin: #Déclaration du service Jellyfin
+    image: jellyfin/jellyfin:latest #Utilisation de la derniere version de l'image officielle de Jellyfin
+    container_name: jellyfin #Nom fixe du conteneur
+    restart: unless-stopped #Redémarration automatique sauf si l'utilisateur l'arrête manuellement
+    networks: # Connexion au service de jellyfin au réseau personnalisé :
+      - meow
+    labels: #Ajout de métadonnée pour config automatique de Traefik
+      - 'traefik.enable=true' # Activation de gestion du service par Traefik
+      - 'traefik.http.routers.jellyfin.rule=Host(`jellyfin.meowkitty.duckdns.org`)' #Définition de règle de routage (URL correpond au sous domaine) !!ACTIVATION DU REVERSE PROXY
+      - 'traefik.http.routers.jellyfin.entryPoints=websecure' #Utilise point d'entrée HTTPS nommé websecure
+    environment: #Force acces via HTTPS
+      - TZ=America/Montreal
+    volumes:
+      - jellyfin_data:/config #Stockage des parametre de config
+      #Biblio de film/series dans conteneur :
+      - /mnt/media/Movies:/movies
+      - /mnt/media/TV:/tv
+  #Source : https://gethomepage.dev/installation/docker/
+  homepage: #Déclaration du service Homepage
+    image: ghcr.io/gethomepage/homepage:latest #Image héberger sur Github Container Registry
+    container_name: homepage #Nom fixe du conteneur
+    labels: #Ajout de métadonnée pour config automatique de Traefik
+      - 'traefik.enable=true' # Activation de gestion du service par Traefik
+      - 'traefik.http.routers.homepage.rule=Host(`homepage.meowkitty.duckdns.org`)' #Définition de règle de routage (URL correpond au sous domaine) !!ACTIVATION DU REVERSE PROXY
+      - 'traefik.http.routers.homepage.entryPoints=websecure' #Utilisation d'un point d'entrée HTTPS nommé websecure
+    volumes:
+      - /path/to/config:/app/config #Dossier de config local du tableau de bord
+      - /var/run/docker.sock:/var/run/docker.sock # Accès au socket de Docker
+    networks: # Connexion service de Homepage au réseau personnalisé :
+      - meow
+    environment: #Securiser acces aux hotes autoriser (Solution au fait que Homepage ne fonctionnait pas
+      HOMEPAGE_ALLOWED_HOSTS: homepage.meowkitty.duckdns.org
+  proxy: #Déclaration du service Proxy
+   image: traefik
+   container_name: traefik
+   restart: unless-stopped #Redémarration automatique sauf si l'utilisateur l'arrête manuellement
+   networks: # Connexion au service de jellyfin au réseau personnalisé :
+       - meow
+   command: #Paramètres des lignes de commande
+     - "--log.level=DEBUG" #Log detailler (debuggage)
+     - "--api.insecure=true" #API web Traefik activée sans protection
+     #Détection automatique des conteneurs docker :
+     - "--providers.docker=true"
+     - "--providers.docker.exposedbydefault=false"
+     #Config de certificat ssl via DUCKDNS
+     - "--certificatesresolvers.letsencrypt.acme.dnschallenge=true"
+     - "--certificatesresolvers.letsencrypt.acme.dnschallenge.provider=duckdns"
+     - "--certificatesresolvers.letsencrypt.acme.email=mail@mail.com"
+     - "--certificatesresolvers.letsencrypt.acme.dnschallenge.disablePropagationCheck=true"
+     - "--certificatesresolvers.letsencrypt.acme.dnschallenge.resolvers=1.1.1.1:53,8.8.8.8:53"
+     - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json" #Fichier de stockage pour fichier ssl
+     #Redirection auto http to https :
+     - "--entrypoints.web.address=:80"
+     - "--entrypoints.web.http.redirections.entrypoint.to=websecure"
+     - "--entrypoints.web.http.redirections.entrypoint.scheme=https"
+     #Config du point d'entrée https avec support des sous domaine
+     - "--entrypoints.websecure.address=:443"
+     - "--entrypoints.websecure.http.tls=true"
+     - "--entrypoints.websecure.http.tls.certResolver=letsencrypt"
+     - "--entrypoints.websecure.http.tls.domains[0].main=meowkitty.duckdns.org"
+     - "--entrypoints.websecure.http.tls.domains[0].sans=*.meowkitty.duckdns.org"
+   volumes: #Stockage des certificat/accès en lecture à la socket Docker
+     - "../data/traefik/letsencrypt:/letsencrypt"
+     - "/var/run/docker.sock:/var/run/docker.sock:ro"
+   labels: #Exposition de l'interface web de Traefik via domaine principal
+     - 'traefik.enable=true'
+     - 'traefik.http.routers.api.rule=Host(`meowkitty.duckdns.org`)'
+     - 'traefik.http.routers.api.entryPoints=websecure'
+     - 'traefik.http.routers.api.service=api@internal'
+   ports: #Exposition des port HTTP et HTTPS du conteneur vers lexterieur
+     - "443:443"
+     - "80:80"
+   environment: #Validation des certificats via DNS
+     - "DUCKDNS_TOKEN=7134a684-78cc-44f3-b4a1-400785c4fef7"
+volumes: #Volumes nommée pour persistance des données 
+    portainer_data:
+    jellyfin_data:
+networks: #Réseau personnalisé pour interconnecter les services
+    meow:
+        driver: bridge
+
+
